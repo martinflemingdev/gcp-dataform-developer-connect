@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Connecting BigQuery Dataform to GitHub with Developer Connect, GitHub Apps, and Crossplane</title>
+  <meta name="description" content="A practical POC for connecting BigQuery Dataform to GitHub through Developer Connect, GitHub Apps, and Crossplane.">
+  <style>
+    :root { color-scheme: light; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+      color: #24292f;
+      background: #ffffff;
+    }
+    main {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 48px 24px 80px;
+    }
+    h1 { font-size: 2.4rem; line-height: 1.15; margin: 0 0 1rem; }
+    h2 { margin-top: 2.4rem; padding-top: 0.4rem; border-top: 1px solid #d8dee4; }
+    h3 { margin-top: 1.8rem; }
+    p, li { font-size: 1.02rem; }
+    img {
+      max-width: 100%;
+      height: auto;
+      display: block;
+      margin: 1.25rem auto;
+      border: 1px solid #d8dee4;
+      border-radius: 8px;
+    }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+    th, td { border: 1px solid #d8dee4; padding: 8px 10px; vertical-align: top; }
+    th { background: #f6f8fa; text-align: left; }
+    code { background: #f6f8fa; border-radius: 4px; padding: 0.15em 0.35em; }
+    pre { background: #f6f8fa; border: 1px solid #d8dee4; border-radius: 8px; padding: 16px; overflow: auto; }
+    pre code { background: transparent; padding: 0; }
+    a { color: #0969da; }
+    .note {
+      margin: 1rem 0 2rem;
+      padding: 12px 16px;
+      background: #fff8c5;
+      border: 1px solid #d4a72c;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="note">Public import copy for Medium. Account-specific IDs and GitHub App screenshots have been redacted while preserving the architecture and resource patterns.</div>
+<h1 id="connecting-bigquery-dataform-to-github-with-developer-connect-github-apps-and-crossplane">Connecting BigQuery Dataform to GitHub with Developer Connect, GitHub Apps, and Crossplane</h1>
+<p>I wanted a concrete answer to a deceptively simple enterprise question: if multiple Google Cloud projects use BigQuery Dataform, and the company wants those Dataform repositories connected to GitHub through Developer Connect, do we need a separate Developer Connect connection and a separate GitHub App in every project?</p>
+<p>The short answer from this POC is: <strong>Developer Connect connections are project- and region-scoped, but a Dataform repository in another project can reference a central Developer Connect GitRepositoryLink by full resource name.</strong> The Google Cloud console did not make that path obvious. The API and Crossplane accepted it.</p>
+<p>That matters because it gives platform teams a cleaner operating model:</p>
+<ol>
+<li>A platform project owns the Developer Connect connection.</li>
+<li>The platform project owns the GitRepositoryLink resources under that connection.</li>
+<li>App projects own their own Dataform repositories.</li>
+<li>Dataform repositories reference the platform GitRepositoryLink by full resource name.</li>
+<li>The app project's Dataform service agent gets IAM on the platform project/link.</li>
+<li>BigQuery execution IAM stays separate.</li>
+</ol>
+<p>This post walks through what I tested, what worked, what failed, and the exact Crossplane resources that made the cross-project setup work.</p>
+<p><img alt="Developer Connect GitHub connection setup" src="assets/images/01_github_connection.png" /></p>
+<h2 id="the-setup">The setup</h2>
+<p>The lab used two Google Cloud projects:</p>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Project</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Platform project</td>
+<td><code>platform-project-id</code></td>
+</tr>
+<tr>
+<td>Consuming project</td>
+<td><code>consumer-project-id</code></td>
+</tr>
+</tbody>
+</table>
+<p>The GitHub repository was:</p>
+<div class="codehilite"><pre><span></span><code>https://github.com/your-org/your-dataform-repo
+</code></pre></div>
+
+<p>The platform project created a Developer Connect connection in Sydney:</p>
+<div class="codehilite"><pre><span></span><code>projects/platform-project-id/locations/australia-southeast1/connections/syd-data-res-crossplane
+</code></pre></div>
+
+<p>Then it created a GitRepositoryLink under that connection:</p>
+<div class="codehilite"><pre><span></span><code>projects/platform-project-id/locations/australia-southeast1/connections/syd-data-res-crossplane/gitRepositoryLinks/your-org-your-dataform-repo
+</code></pre></div>
+
+<p>The consuming project created a Dataform repository that referenced that platform-owned link:</p>
+<div class="codehilite"><pre><span></span><code>projects/consumer-project-id/locations/australia-southeast1/repositories/dataform-devconnect-cross-project
+</code></pre></div>
+
+<p>That final resource is the important one. The Dataform repository lives in <code>consumer-project-id</code>, but its Git remote is backed by a Developer Connect GitRepositoryLink in <code>platform-project-id</code>.</p>
+<p><img alt="Consumer project Dataform repository using the platform GitRepositoryLink" src="assets/images/05_consumer-project-uses-platform-connection-link.png" /></p>
+<h2 id="what-the-region-field-means">What the region field means</h2>
+<p>The Developer Connect connection has a region. GitHub does not.</p>
+<p>That distinction is easy to miss in the UI. A GitHub repository is not in <code>australia-southeast1</code>, and the GitHub App is not in <code>australia-southeast1</code>. The region is about Google's Developer Connect resource handling: connection/link metadata, credential references, and regional handling for the data-residency-compliant event path.</p>
+<p>For this POC, selecting Sydney meant the Developer Connect connection and GitRepositoryLink lived in <code>australia-southeast1</code>. It did not mean GitHub became regional, and it did not force BigQuery datasets or Dataform workflow execution into that region.</p>
+<p>Dataform location, BigQuery dataset location, and Developer Connect connection location are related architecture decisions, but they are not the same thing.</p>
+<h2 id="what-the-github-app-is-doing">What the GitHub App is doing</h2>
+<p>When data residency is enabled for a Developer Connect GitHub connection, the console walks you through creating or using a dedicated GitHub App.</p>
+<p>The GitHub App is the identity Developer Connect uses to access repositories. The important fields are:</p>
+<table>
+<thead>
+<tr>
+<th>GitHub App field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>App ID</td>
+<td>Numeric identifier for the GitHub App. Not a secret.</td>
+</tr>
+<tr>
+<td>Client ID</td>
+<td>OAuth identifier. Not a secret by itself.</td>
+</tr>
+<tr>
+<td>Client secret</td>
+<td>OAuth secret. Different from the private key. Do not expose it.</td>
+</tr>
+<tr>
+<td>Private key</td>
+<td>Server-to-server GitHub App credential used to mint installation tokens. This is sensitive.</td>
+</tr>
+<tr>
+<td>Webhook URL</td>
+<td>Where GitHub sends app/repo events. In this POC it points to Developer Connect.</td>
+</tr>
+<tr>
+<td>Webhook secret</td>
+<td>Shared secret for validating webhook payload signatures. Separate from the private key and client secret.</td>
+</tr>
+<tr>
+<td>Private key SHA/fingerprint</td>
+<td>A fingerprint, not the private key. It cannot reconstruct the key, but I would still redact it from public docs.</td>
+</tr>
+</tbody>
+</table>
+<p><img alt="GitHub App configuration - general settings" src="assets/images/06_1_GitHub-App-config.png" /></p>
+<p><img alt="GitHub App configuration - webhook settings" src="assets/images/06_2_GitHub-App-config.png" /></p>
+<p><img alt="GitHub App configuration - private key and IP allow list" src="assets/images/06_3_GitHub-App-config.png" /></p>
+<p>The GitHub App must be installed on each GitHub repository that Developer Connect needs to access. That repository installation step is separate from creating the Dataform repository.</p>
+<p>For an enterprise rollout, I would not want personal ownership of this app. The app should be owned by the company's GitHub organization or enterprise platform owner, with clear ownership for private key rotation, webhook configuration, and repository installation approvals.</p>
+<h2 id="the-api-prerequisites">The API prerequisites</h2>
+<p>For the consuming Dataform project, the explicit API prerequisites for this POC were:</p>
+<div class="codehilite"><pre><span></span><code>bigquery.googleapis.com
+dataform.googleapis.com
+developerconnect.googleapis.com
+</code></pre></div>
+
+<p>The platform project also needs the APIs required for Developer Connect and Secret Manager, because it owns the connection and the GitHub App credential references.</p>
+<p>The console surfaced this through the BigQuery/Dataform onboarding panels, but for infrastructure-as-code I would make these explicit.</p>
+<p><img alt="BigQuery unified API prompt" src="assets/images/04_1_consumer-project-needs-bq-unified-api.png" /></p>
+<p><img alt="Developer Connect API prompt" src="assets/images/04_2_consumer-project-needs-developer-connect-api.png" /></p>
+<h2 id="the-crossplane-connection">The Crossplane connection</h2>
+<p>Here is the Crossplane-managed Developer Connect connection. The POC reused the GitHub App and installation created during the console test.</p>
+<div class="codehilite"><pre><span></span><code><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">developerconnect.gcp.upbound.io/v1beta1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ConnectConnection</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">syd-data-res-crossplane</span>
+<span class="w">  </span><span class="nt">annotations</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">crossplane.io/external-name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">syd-data-res-crossplane</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">deletionPolicy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Delete</span>
+<span class="w">  </span><span class="nt">providerConfigRef</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">default</span>
+<span class="w">  </span><span class="nt">forProvider</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">project</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">platform-project-id</span>
+<span class="w">    </span><span class="nt">location</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">australia-southeast1</span>
+<span class="w">    </span><span class="nt">githubEnterpriseConfig</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">hostUri</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://github.com</span>
+<span class="w">      </span><span class="nt">appId</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;GITHUB_APP_ID&quot;</span>
+<span class="w">      </span><span class="nt">appInstallationId</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;GITHUB_APP_INSTALLATION_ID&quot;</span>
+<span class="w">      </span><span class="nt">privateKeySecretVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">projects/PLATFORM_PROJECT_NUMBER/locations/australia-southeast1/secrets/developer-connect-github-app-private-key/versions/latest</span>
+<span class="w">      </span><span class="nt">webhookSecretSecretVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">projects/PLATFORM_PROJECT_NUMBER/locations/australia-southeast1/secrets/developer-connect-github-webhook-secret/versions/latest</span>
+</code></pre></div>
+
+<p>In a production write-up, I would sanitize the exact app ID, installation ID, and Secret Manager resource names. They are not the private key, but they are operational metadata.</p>
+<p>The key point is that the manifest does not embed the private key or webhook secret. It references Secret Manager versions.</p>
+<h2 id="the-gitrepositorylink">The GitRepositoryLink</h2>
+<p>The GitRepositoryLink is the resource Dataform actually points at.</p>
+<div class="codehilite"><pre><span></span><code><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">developerconnect.gcp.upbound.io/v1beta1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ConnectGitRepositoryLink</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">your-org-your-dataform-repo</span>
+<span class="w">  </span><span class="nt">annotations</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">crossplane.io/external-name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">your-org-your-dataform-repo</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">deletionPolicy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Delete</span>
+<span class="w">  </span><span class="nt">providerConfigRef</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">default</span>
+<span class="w">  </span><span class="nt">forProvider</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">project</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">platform-project-id</span>
+<span class="w">    </span><span class="nt">location</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">australia-southeast1</span>
+<span class="w">    </span><span class="nt">parentConnectionRef</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">syd-data-res-crossplane</span>
+<span class="w">    </span><span class="nt">cloneUri</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://github.com/your-org/your-dataform-repo.git</span>
+</code></pre></div>
+
+<p>This lives under the platform connection. It does not live in every app project.</p>
+<h2 id="same-project-dataform-repository">Same-project Dataform repository</h2>
+<p>First I tested the simple case: Dataform repository and Developer Connect link in the same project.</p>
+<div class="codehilite"><pre><span></span><code><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dataform.gcp.upbound.io/v1beta1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Repository</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dataform-devconnect-same-project</span>
+<span class="w">  </span><span class="nt">annotations</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">crossplane.io/external-name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dataform-devconnect-same-project</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">forProvider</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">project</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">platform-project-id</span>
+<span class="w">    </span><span class="nt">region</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">australia-southeast1</span>
+<span class="w">    </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Dataform Developer Connect same-project POC</span>
+<span class="w">    </span><span class="nt">gitRemoteSettings</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://github.com/your-org/your-dataform-repo.git</span>
+<span class="w">      </span><span class="nt">defaultBranch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">main</span>
+<span class="w">      </span><span class="nt">gitRepositoryLink</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">projects/platform-project-id/locations/australia-southeast1/connections/syd-data-res-crossplane/gitRepositoryLinks/your-org-your-dataform-repo</span>
+</code></pre></div>
+
+<p>That worked.</p>
+<h2 id="cross-project-dataform-repository">Cross-project Dataform repository</h2>
+<p>Then I tested the part the console did not make obvious: a Dataform repository in <code>consumer-project-id</code> using a GitRepositoryLink in <code>platform-project-id</code>.</p>
+<div class="codehilite"><pre><span></span><code><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dataform.gcp.upbound.io/v1beta1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Repository</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dataform-devconnect-cross-project</span>
+<span class="w">  </span><span class="nt">annotations</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">crossplane.io/external-name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dataform-devconnect-cross-project</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">forProvider</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">project</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">consumer-project-id</span>
+<span class="w">    </span><span class="nt">region</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">australia-southeast1</span>
+<span class="w">    </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Dataform Developer Connect cross-project POC</span>
+<span class="w">    </span><span class="nt">gitRemoteSettings</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://github.com/your-org/your-dataform-repo.git</span>
+<span class="w">      </span><span class="nt">defaultBranch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">main</span>
+<span class="w">      </span><span class="nt">gitRepositoryLink</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">projects/platform-project-id/locations/australia-southeast1/connections/syd-data-res-crossplane/gitRepositoryLinks/your-org-your-dataform-repo</span>
+</code></pre></div>
+
+<p>That also worked, once the IAM was correct.</p>
+<p>The conclusion is blunt: <strong>the console picker is not the full product capability.</strong> The API accepted a full cross-project GitRepositoryLink.</p>
+<h2 id="the-iam-that-made-cross-project-work">The IAM that made cross-project work</h2>
+<p>There are three separate IAM paths. Mixing them together makes this setup harder to reason about.</p>
+<h3 id="1-the-consuming-projects-dataform-service-agent-needs-access-to-the-platform-link">1. The consuming project's Dataform service agent needs access to the platform link</h3>
+<p>The consuming project has a Google-managed Dataform service agent:</p>
+<div class="codehilite"><pre><span></span><code>service-&lt;CONSUMING_PROJECT_NUMBER&gt;@gcp-sa-dataform.iam.gserviceaccount.com
+</code></pre></div>
+
+<p>For <code>consumer-project-id</code>, that was:</p>
+<div class="codehilite"><pre><span></span><code>service-&lt;CONSUMING_PROJECT_NUMBER&gt;@gcp-sa-dataform.iam.gserviceaccount.com
+</code></pre></div>
+
+<p>That principal needs Developer Connect permissions on the platform project, because the connection and GitRepositoryLink live there:</p>
+<div class="codehilite"><pre><span></span><code><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cloudplatform.gcp.upbound.io/v1beta2</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ProjectIAMMember</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">consumer-project-id-dataform-developerconnect-token-accessor</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">forProvider</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">project</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">platform-project-id</span>
+<span class="w">    </span><span class="nt">role</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">roles/developerconnect.tokenAccessor</span>
+<span class="w">    </span><span class="nt">member</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">serviceAccount:service-&lt;CONSUMING_PROJECT_NUMBER&gt;@gcp-sa-dataform.iam.gserviceaccount.com</span>
+<span class="nn">---</span>
+<span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cloudplatform.gcp.upbound.io/v1beta2</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ProjectIAMMember</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">consumer-project-id-dataform-developerconnect-git-proxy-user</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">forProvider</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">project</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">platform-project-id</span>
+<span class="w">    </span><span class="nt">role</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">roles/developerconnect.gitProxyUser</span>
+<span class="w">    </span><span class="nt">member</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">serviceAccount:service-&lt;CONSUMING_PROJECT_NUMBER&gt;@gcp-sa-dataform.iam.gserviceaccount.com</span>
+</code></pre></div>
+
+<p>The important line is this:</p>
+<div class="codehilite"><pre><span></span><code><span class="nt">project</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">platform-project-id</span>
+</code></pre></div>
+
+<p>That is intentional. The grant is on the platform project, not the consuming project.</p>
+<p><img alt="Dataform service agent needs roles" src="assets/images/04_3_dataform-sa-needs-roles.png" /></p>
+<h3 id="2-the-iac-identity-needs-permission-to-create-dataform-repositories-in-the-consuming-project">2. The IaC identity needs permission to create Dataform repositories in the consuming project</h3>
+<p>Crossplane also needed permission to create the Dataform repository in <code>consumer-project-id</code>.</p>
+<div class="codehilite"><pre><span></span><code><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cloudplatform.gcp.upbound.io/v1beta2</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ProjectIAMMember</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">crossplane-provider-dataform-admin-consumer-project-id</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">forProvider</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">project</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">consumer-project-id</span>
+<span class="w">    </span><span class="nt">role</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">roles/dataform.admin</span>
+<span class="w">    </span><span class="nt">member</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">serviceAccount:crossplane@platform-project-id.iam.gserviceaccount.com</span>
+</code></pre></div>
+
+<p>Without this, the create failed with <code>dataform.repositories.create</code> denied.</p>
+<p>This is separate from Developer Connect access. This IAM grant is about allowing the controller to create the Dataform resource in the consuming project.</p>
+<h3 id="3-the-dataform-execution-identity-still-needs-bigquery-permissions">3. The Dataform execution identity still needs BigQuery permissions</h3>
+<p>Developer Connect IAM only covers Git access. It does not grant BigQuery execution access.</p>
+<p>The Dataform execution identity still needs normal BigQuery permissions, such as:</p>
+<div class="codehilite"><pre><span></span><code>roles/bigquery.jobUser
+</code></pre></div>
+
+<p>and dataset/table access as appropriate.</p>
+<h2 id="the-proxy-question">The proxy question</h2>
+<p>Developer Connect has a Git proxy option. It changes the network path.</p>
+<p>With proxy disabled, Dataform reaches the Git host directly using Developer Connect credentials. If the Git host is public GitHub with no IP allow list, this can work fine. If the company has GitHub Enterprise IP allowlisting, this maps to Dataform regional egress allowlisting.</p>
+<p>With proxy enabled, Dataform reaches the Developer Connect proxy, and the proxy reaches the Git host. The Git host sees the Developer Connect proxy or private-connectivity path, not normal direct Dataform egress.</p>
+<p>That matters because the allowlist question changes. If the company says “allowlist Dataform IPs,” that implies a direct Dataform egress model. If the company wants the Developer Connect proxy, the allowlist target is not simply the Dataform egress IP table.</p>
+<p>One provider gap showed up here: the Crossplane Developer Connect CRD and the current Terraform provider schema did not expose <code>gitProxyConfig</code> for the connection. The console-created connection had proxy enabled by default. The Crossplane-created connection did not include proxy configuration, so I treated it as proxy disabled unless a separate <code>gcloud</code> or API step enables it.</p>
+<p>A workaround is:</p>
+<div class="codehilite"><pre><span></span><code>gcloud<span class="w"> </span>alpha<span class="w"> </span>developer-connect<span class="w"> </span>connections<span class="w"> </span>update<span class="w"> </span>syd-data-res-crossplane<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--project<span class="o">=</span>platform-project-id<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--location<span class="o">=</span>australia-southeast1<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--git-proxy-config-enabled
+</code></pre></div>
+
+<h2 id="what-i-would-vend-to-app-teams">What I would vend to app teams</h2>
+<p>For app onboarding, the platform team should provide:</p>
+<ul>
+<li>The region.</li>
+<li>The full GitRepositoryLink resource name.</li>
+<li>Confirmation that the GitHub App is installed on the target repository.</li>
+<li>Confirmation that the app project's Dataform service agent has Developer Connect IAM on the platform project/link.</li>
+<li>The chosen network model: direct Dataform egress or Developer Connect proxy/private connectivity.</li>
+</ul>
+<p>The app team still owns:</p>
+<ul>
+<li>Its Dataform repository resource.</li>
+<li>Its Dataform development workflow.</li>
+<li>Its BigQuery execution IAM.</li>
+<li>Its dataset/table access model.</li>
+</ul>
+<h2 id="final-takeaways">Final takeaways</h2>
+<p>Here is the shortest version of the POC result:</p>
+<ul>
+<li>Developer Connect connections are project- and region-scoped.</li>
+<li>There is no folder-level Developer Connect connection.</li>
+<li>A Dataform repository can use a Developer Connect GitRepositoryLink from another project if it references the full resource name.</li>
+<li>The console did not make this obvious, but the API and Crossplane accepted it.</li>
+<li>The consuming project's Dataform service agent needs Developer Connect roles on the platform project/link.</li>
+<li>The IaC identity needs Dataform permissions in the consuming project.</li>
+<li>BigQuery execution IAM is separate.</li>
+<li>The GitHub App can be centrally owned, but it must be installed on each repository that Dataform needs to access.</li>
+<li>Proxy versus direct Git access is a real enterprise networking decision, not a cosmetic checkbox.</li>
+</ul>
+<p>This is enough for a platform pattern: centralize the Developer Connect connection and GitHub App ownership, vend GitRepositoryLink resource names per repo/region, and let app teams create Dataform repositories in their own projects with the correct service-agent IAM.</p>
+<h2 id="references">References</h2>
+<ul>
+<li>Dataform repository creation: https://docs.cloud.google.com/dataform/docs/create-repository</li>
+<li>Dataform Git repository integration: https://docs.cloud.google.com/dataform/docs/connect-repository</li>
+<li>Developer Connect GitHub setup: https://docs.cloud.google.com/developer-connect/docs/connect-github-repo</li>
+<li>Developer Connect data residency: https://docs.cloud.google.com/developer-connect/docs/data-residency</li>
+<li>Developer Connect Git proxy: https://docs.cloud.google.com/developer-connect/docs/configure-git-proxy</li>
+<li>GitHub App private keys: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps</li>
+<li>GitHub webhook validation: https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries</li>
+</ul>
+  </main>
+</body>
+</html>
