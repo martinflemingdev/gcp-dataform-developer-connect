@@ -77,6 +77,15 @@ For data-residency-compliant Developer Connect setup, Google Cloud console creat
 
 The GitHub App must be installed on each repository that Developer Connect needs to access. That repository installation step is separate from creating the Dataform repository.
 
+Developer Connect exposes two different GitHub connection configurations:
+
+- `githubConfig` uses one of Google's predefined/shared GitHub Apps, such as `DEVELOPER_CONNECT`, plus an OAuth credential. It does not accept a customer-owned GitHub App ID, private key, or webhook secret. Google routes events for this model through its global GitHub App path, so Google documents it as not data-residency compliant.
+- `githubEnterpriseConfig` accepts a specific customer-owned GitHub App. For a complete, non-interactive connection to a precreated app, supply `hostUri`, `appId`, `appInstallationId`, `privateKeySecretVersion`, and `webhookSecretSecretVersion`. Despite the field name, this is also the configuration used by this POC's data-residency-compliant connection to ordinary `https://github.com`; the repository can be a normal private GitHub.com repository and does not need to be hosted on GitHub Enterprise Server.
+
+Although the API schema marks some of these fields optional, they are required for this precreated-app workflow to reach a usable state without another interactive setup step. The POC created `syd-data-res-xp-no-app-id` without `appInstallationId`, but it remained at `PENDING_INSTALL_APP`, left `appInstallationId` empty, and returned an `actionUri`; the console confirmed that installation still had to be completed. Resource creation and `Ready=True` in Crossplane therefore do not prove that GitHub installation setup is complete. Check `status.atProvider.installationState` for `stage: COMPLETE`.
+
+References: [Developer Connect connection API](https://docs.cloud.google.com/developer-connect/docs/api/reference/rest/v1/projects.locations.connections), [Developer Connect data residency](https://docs.cloud.google.com/developer-connect/docs/data-residency).
+
 Important GitHub App fields:
 
 - App ID: identifier used by Developer Connect; not a secret.
