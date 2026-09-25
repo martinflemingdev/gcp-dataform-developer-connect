@@ -1,0 +1,5 @@
+defaultProject: cdmc-data
+defaultDataset: dataform_e2e
+defaultLocation: australia-southeast1
+defaultAssertionDataset: dataform_e2e_assertions
+dataformCoreVersion: "3.0.43"

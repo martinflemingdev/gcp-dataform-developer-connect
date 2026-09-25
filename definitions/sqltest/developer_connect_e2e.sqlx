@@ -1,0 +1,11 @@
+config {
+  type: "table",
+  name: "developer_connect_e2e",
+  description: "End-to-end proof that Dataform loaded this workflow through Developer Connect and executed it in BigQuery.",
+  tags: ["developer-connect-e2e"]
+}
+
+SELECT
+  "Developer Connect -> Dataform -> BigQuery succeeded" AS message,
+  CURRENT_TIMESTAMP() AS executed_at,
+  SESSION_USER() AS executed_by
