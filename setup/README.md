@@ -186,6 +186,17 @@ Proxy enabled means Dataform reaches the Developer Connect proxy, and the proxy 
 
 The Crossplane-created connection in this POC did not include `gitProxyConfig`, so treat it as proxy disabled unless a separate gcloud/API step enables proxy. The Google Cloud console-created connection had proxy enabled by default.
 
+The console-created link's proxy hostname was tested with DNS on 2026-09-25:
+
+```text
+australia-southeast1-git.developerconnect.dev
+  CNAME: googlecode.l.googleusercontent.com
+  IPv4:  192.178.155.82
+  IPv6:  2607:f8b0:4004:c23::52
+```
+
+Only the hostname is resolved; the project/connection/repository path in the proxy URL is irrelevant to DNS. These addresses are a point-in-time DNS result behind Google infrastructure, not documented static Developer Connect proxy egress addresses. Do not build a firewall allowlist from `192.178.155.82` or the IPv6 result alone: DNS answers can vary by resolver, client location, routing, and time. Use Google-published ranges or an explicitly supported private-connectivity design for production allowlisting.
+
 ## What an app team needs from platform
 
 For each onboarding, platform should provide:
